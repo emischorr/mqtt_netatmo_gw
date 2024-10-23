@@ -4,7 +4,7 @@ defmodule MqttNetatmoGw.WeatherStation do
 
   alias MqttNetatmoGw.Mqtt
 
-  @token_refresh_interval :timer.hours(1)
+  @token_refresh_interval :timer.hours(2)
   @exported_fields ["CO2", "Temperature", "Humidity", "Noise"]
 
   # Client
@@ -47,22 +47,31 @@ defmodule MqttNetatmoGw.WeatherStation do
     {:noreply, refresh_token(state)}
   end
 
+  def handle_info(unknown, state) do
+    Logger.warning("Unknown call to handle info with: #{inspect(unknown)}")
+    {:noreply, state}
+  end
+
   def handle_call(:refresh, _from, state) do
     update(state)
     {:reply, :ok, state}
   end
 
   defp refresh_token(%{config: config} = state) do
-    refresh_token = state.refresh_token || config[:refresh_token]
+    current_refresh_token = state.refresh_token || config[:refresh_token]
 
-    {:ok, %{"refresh_token" => refresh_token, "access_token" => access_token}} =
-      Netatmox.refresh_token(config[:client_id], config[:client_secret], refresh_token)
+    case Netatmox.refresh_token(config[:client_id], config[:client_secret], current_refresh_token) do
+      {:ok, %{"refresh_token" => new_refresh_token, "access_token" => new_access_token}} ->
+        Logger.info("Updated tokens. Access: #{new_access_token} / Refresh: #{new_refresh_token}")
 
-    Logger.info("Updated tokens. Access: #{access_token} / Refresh: #{refresh_token}")
+        state
+        |> Map.replace(:refresh_token, new_refresh_token)
+        |> Map.replace(:access_token, new_access_token)
 
-    state
-    |> Map.put(:refresh_token, refresh_token)
-    |> Map.put(:access_token, access_token)
+      {:ok, %{"error" => error_msg}} ->
+        Logger.warning("Refreshing token failed: #{inspect(error_msg)}")
+        state
+    end
   end
 
   defp update(%{mqtt_client_id: mqtt_client_id, access_token: access_token}) do
@@ -76,16 +85,39 @@ defmodule MqttNetatmoGw.WeatherStation do
   defp weather_data(access_token) do
     case Netatmox.station_data(access_token) do
       {:ok, %{"body" => %{"devices" => devices}}} ->
-        main_device = Enum.filter(devices, &(&1["type"] == "NAMain")) |> List.first()
-        Enum.map(main_device["modules"], fn module ->
-          %{module["module_name"] => filter_data(module["dashboard_data"])}
-        end)
-        |> List.foldl(%{}, fn x, acc -> Map.merge(x, acc) end)
-        |> Map.merge(%{main_device["module_name"] => filter_data(main_device["dashboard_data"])})
+        devices
+        |> Enum.filter(&(&1["type"] == "NAMain"))
+        |> List.first()
+        |> extract_data()
       unexpected_error ->
         Logger.warning("Could not get weather data: #{inspect unexpected_error}")
         %{}
     end
+  end
+
+  defp extract_data(nil) do
+    Logger.warning("No main device in response")
+    %{}
+  end
+
+  defp extract_data(main_device) do
+    Enum.map(main_device["modules"], &(build_module_data(&1)))
+    |> List.foldl(%{}, fn x, acc -> Map.merge(x, acc) end)
+    |> Map.merge(build_module_data(main_device))
+  end
+
+  defp build_module_data(%{"module_name" => name, "dashboard_data" => data}) do
+    %{name => filter_data(data)}
+  end
+
+  defp build_module_data(%{"module_name" => name, "reachable" => false, "battery_percent" => battery}) do
+    Logger.warning("Module #{name} not reachable. Battery level: #{battery}%")
+    %{}
+  end
+
+  defp build_module_data(%{"module_name" => name}) do
+    Logger.warning("No dashboard data for module #{name}.")
+    %{}
   end
 
   defp filter_data(data) do
