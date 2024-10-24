@@ -2,9 +2,9 @@ defmodule MqttNetatmoGw.WeatherStation do
   use GenServer
   require Logger
 
+  alias MqttNetatmoGw.Netatmo
   alias MqttNetatmoGw.Mqtt
 
-  @token_refresh_interval :timer.hours(2)
   @exported_fields ["CO2", "Temperature", "Humidity", "Noise"]
 
   # Client
@@ -26,25 +26,18 @@ defmodule MqttNetatmoGw.WeatherStation do
 
   def handle_continue(:init, _state) do
     config = Application.get_env(:mqtt_netatmo_gw, :weather_station)
-    |> Keyword.merge(Application.get_env(:mqtt_netatmo_gw, :netatmo))
 
     {:ok, mqtt_client_id} = Mqtt.connect()
     Mqtt.publish_meta(mqtt_client_id)
 
     Process.send_after(self(), :update, 10_000)
-    Process.send_after(self(), :refresh_token, 1_000)
-    {:noreply, %{mqtt_client_id: mqtt_client_id, config: config, access_token: nil, refresh_token: nil}}
+    {:noreply, %{mqtt_client_id: mqtt_client_id, config: config}}
   end
 
   def handle_info(:update, state) do
-    update(state)
+    update(state.mqtt_client_id, Netatmo.token())
     Process.send_after(self(), :update, state.config[:update_interval])
     {:noreply, state}
-  end
-
-  def handle_info(:refresh_token, state) do
-    Process.send_after(self(), :refresh_token, @token_refresh_interval)
-    {:noreply, refresh_token(state)}
   end
 
   def handle_info(unknown, state) do
@@ -53,32 +46,16 @@ defmodule MqttNetatmoGw.WeatherStation do
   end
 
   def handle_call(:refresh, _from, state) do
-    update(state)
+    update(state.mqtt_client_id, Netatmo.token())
     {:reply, :ok, state}
   end
 
-  defp refresh_token(%{config: config} = state) do
-    current_refresh_token = state.refresh_token || config[:refresh_token]
-
-    case Netatmox.refresh_token(config[:client_id], config[:client_secret], current_refresh_token) do
-      {:ok, %{"refresh_token" => new_refresh_token, "access_token" => new_access_token}} ->
-        Logger.info("Updated tokens. Access: #{new_access_token} / Refresh: #{new_refresh_token}")
-
-        state
-        |> Map.replace(:refresh_token, new_refresh_token)
-        |> Map.replace(:access_token, new_access_token)
-
-      {:ok, %{"error" => error_msg}} ->
-        Logger.warning("Refreshing token failed: #{inspect(error_msg)}")
-        state
-    end
-  end
-
-  defp update(%{mqtt_client_id: mqtt_client_id, access_token: access_token}) do
+  defp update(mqtt_client_id, access_token) do
     Enum.each(weather_data(access_token), fn {module, data} ->
       Enum.each(data, fn {key, value} ->
         Mqtt.publish(mqtt_client_id, "#{module}/#{key}", value)
       end)
+      Mqtt.publish(mqtt_client_id, "#{module}/last_update", now())
     end)
   end
 
@@ -106,13 +83,20 @@ defmodule MqttNetatmoGw.WeatherStation do
     |> Map.merge(build_module_data(main_device))
   end
 
-  defp build_module_data(%{"module_name" => name, "dashboard_data" => data}) do
-    %{name => filter_data(data)}
-  end
-
   defp build_module_data(%{"module_name" => name, "reachable" => false, "battery_percent" => battery}) do
     Logger.warning("Module #{name} not reachable. Battery level: #{battery}%")
     %{}
+  end
+
+  defp build_module_data(%{"module_name" => name, "dashboard_data" => data, "battery_percent" => battery}) do
+    module_data = data
+    |> filter_data()
+    |> Map.merge(%{battery: battery})
+    %{name => module_data}
+  end
+
+  defp build_module_data(%{"module_name" => name, "dashboard_data" => data}) do
+    %{name => filter_data(data)}
   end
 
   defp build_module_data(%{"module_name" => name}) do
@@ -123,4 +107,6 @@ defmodule MqttNetatmoGw.WeatherStation do
   defp filter_data(data) do
     Map.filter(data, fn {key, _value} -> key in @exported_fields end)
   end
+
+  defp now, do: DateTime.utc_now(:second) |> DateTime.to_iso8601()
 end

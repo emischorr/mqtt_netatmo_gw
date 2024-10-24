@@ -30,6 +30,7 @@ defmodule MqttNetatmoGw.Mqtt do
   def publish_meta(client_id) do
     topic_ns = Application.get_env(:mqtt_netatmo_gw, :mqtt)[:event_topic_namespace]
     Tortoise.publish(client_id, "#{topic_ns}/status", "online", [qos: 0, retain: true])
+    Tortoise.publish(client_id, "#{topic_ns}/online_since", now(), [qos: 0, retain: true])
   end
 
   @spec publish(String.t(), String.t(), binary) :: :ok | {:error, :unknown_connection} | {:ok, reference}
@@ -42,4 +43,6 @@ defmodule MqttNetatmoGw.Mqtt do
   defp sanitize_topic(topic) do
     topic |> String.downcase() |> String.replace(" ", "_")
   end
+
+  defp now, do: DateTime.utc_now(:second) |> DateTime.to_iso8601()
 end

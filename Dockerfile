@@ -59,6 +59,8 @@ RUN mix compile
 
 # copy runtime configuration file
 COPY config/runtime.exs config/
+# copy priv dir
+COPY priv priv
 
 # assemble release
 RUN mix release $RELEASE_NAME
