@@ -25,4 +25,4 @@ mqtt_netatmo_gw-*.tar
 # Temporary files, for example, from tests.
 /tmp/
 
-.env
+.envrc

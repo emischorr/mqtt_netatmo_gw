@@ -1,7 +1,13 @@
 # MqttNetatmoGw
 
 A MQTT gateway that brings weather station data from a netatmo account over to MQTT.
-It connects and updates weather information ("CO2", "Temperature", "Humidity", "Noise") every 5 minutes. Supports multiple sensors/devices.
+It connects and updates weather information ("CO2", "Temperature", "Humidity", "Noise") every 5 minutes.
+
+Features
+- Supports multiple sensors/modules
+- Battery level monitoring
+- Automatic token management
+- Fault tolerant
 
 ## ENV vars
 
